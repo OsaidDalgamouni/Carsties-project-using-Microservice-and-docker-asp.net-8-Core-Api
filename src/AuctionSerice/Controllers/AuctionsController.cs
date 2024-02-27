@@ -3,6 +3,8 @@ using AuctionSerice.DTOs;
 using AuctionSerice.Entities;
 using AutoMapper;
 using AutoMapper.QueryableExtensions;
+using Contract;
+using MassTransit;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 
@@ -14,22 +16,25 @@ public class AuctionsController : ControllerBase
 {
     private readonly AuctionDbContext _db;
     private readonly IMapper _mapper;
-    public AuctionsController(AuctionDbContext auctionDbContext, IMapper mapper)
+    private readonly IPublishEndpoint publishEndpoint;
+
+    public AuctionsController(AuctionDbContext auctionDbContext, IMapper mapper, IPublishEndpoint publishEndpoint)
     {
 
         _db = auctionDbContext;
         _mapper = mapper;
-
+        this.publishEndpoint = publishEndpoint;
     }
     [HttpGet]
 
     public async Task<ActionResult<List<AuctionDto>>> GetAllAuctions(string Date)
     {   //AsQueryable To Keep Query Type  Iqeryable because  OrderBy change the type of query    
-        var query =_db.Auctions.OrderBy(x=>x.Item.Make).AsQueryable();
+        var query = _db.Auctions.OrderBy(x => x.Item.Make).AsQueryable();
 
-        if(! string.IsNullOrEmpty(Date)){
+        if (!string.IsNullOrEmpty(Date))
+        {
 
-            query=query.Where(x=>x.UpdatedAt.CompareTo(DateTime.Parse(Date).ToUniversalTime())>0);
+            query = query.Where(x => x.UpdatedAt.CompareTo(DateTime.Parse(Date).ToUniversalTime()) > 0);
         }
 
         return await query.ProjectTo<AuctionDto>(_mapper.ConfigurationProvider).ToListAsync();
@@ -53,12 +58,17 @@ public class AuctionsController : ControllerBase
 
         Auction.Seller = "test";
         _db.Auctions.Add(Auction);
+        var newAuction = _mapper.Map<AuctionDto>(Auction);
+
+        await publishEndpoint.Publish(_mapper.Map<AuctionCreated>(newAuction));
+
 
         var result = await _db.SaveChangesAsync() > 0;
 
+
         if (!result) return BadRequest("Could not save auction");
 
-        return CreatedAtAction(nameof(GetAuctionById), new { Auction.Id }, _mapper.Map<AuctionDto>(Auction));
+        return CreatedAtAction(nameof(GetAuctionById), new { Auction.Id }, newAuction);
 
     }
 
@@ -75,6 +85,7 @@ public class AuctionsController : ControllerBase
         FindAuction.Item.Color = updateAuctionDto.Color ?? FindAuction.Item.Color;
         FindAuction.Item.Mileage = updateAuctionDto.Mileage ?? FindAuction.Item.Mileage;
         FindAuction.Item.Year = updateAuctionDto.Year ?? FindAuction.Item.Year;
+        await publishEndpoint.Publish(_mapper.Map<AuctionUpdated>(FindAuction));
 
         var result = _db.SaveChanges() > 0;
         if (result) return Ok();
@@ -84,20 +95,23 @@ public class AuctionsController : ControllerBase
     }
     [HttpDelete("{id}")]
 
-    public async Task<ActionResult>DeleteAuction(Guid id){
-       
-       var Auction =await _db.Auctions.FindAsync(id);
+    public async Task<ActionResult> DeleteAuction(Guid id)
+    {
 
-       if(Auction ==null)return NotFound();
+        var Auction = await _db.Auctions.FindAsync(id);
+
+        if (Auction == null) return NotFound();
 
 
-       _db.Auctions.Remove(Auction);
-       var Result =_db.SaveChanges() >0;
+        _db.Auctions.Remove(Auction);
+        await publishEndpoint.Publish<AuctionDeleted>(new{id=Auction.Id.ToString()});
 
-       if(!Result)return BadRequest("Error While SaveChanges");
+        var Result = _db.SaveChanges() > 0;
 
-       return Ok();
-       
+        if (!Result) return BadRequest("Error While SaveChanges");
+
+        return Ok();
+
 
     }
 
